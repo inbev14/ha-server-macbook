@@ -83,6 +83,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var onBatterySince: Date?
     var batteryWarningSent = false
     
+    // Пам'ять про те, чи був кабель увімкнений під час попередньої перевірки
+    var lastACState: Bool?
+    
     var localWebhookID = ""
     var remoteWebhookID = ""
 
@@ -142,7 +145,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let power = batteryInfo()
         var active = serverStatus() == "ON" || serverStatus() == "PAUSED"
         
-        // --- ЗАХИСТ ВІД РОЗРЯДУ (Єдина автоматична дія) ---
+        // --- АВТОМАТИЧНЕ УВІМКНЕННЯ ПРИ ПОДАЧІ ЖИВЛЕННЯ ---
+        // Якщо раніше кабелю не було, а тепер він є (момент підключення)
+        if let wasAC = lastACState, !wasAC && power.onAC {
+            if !active {
+                _ = helperWrite("start")
+                active = true
+                sendHeartbeat(event: "mode_changed")
+            }
+        }
+        // Запам'ятовуємо поточний стан кабелю для наступної перевірки
+        lastACState = power.onAC
+        
+        // --- АВТОМАТИЧНЕ ВИМКНЕННЯ ВІД РОЗРЯДУ ---
         // Якщо живлення від батареї І заряд 20% або нижче -> примусово вимикаємо
         if !power.onAC && power.percent >= 0 && power.percent <= 20 {
             if active {
@@ -151,9 +166,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 sendHeartbeat(event: "mode_changed")
             }
         }
-        // У всіх інших випадках (на кабелі АБО заряд > 20%) програма
-        // НЕ втручається. Вона зберігає той режим, який ти вибрав кнопкою.
-        // ---------------------------------------------------
         
         if active && !power.onAC {
             if onBatterySince == nil { onBatterySince = Date() }
