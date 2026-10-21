@@ -143,20 +143,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let power = batteryInfo()
         var active = serverStatus() == "ON" || serverStatus() == "PAUSED"
         
-        // --- АВТОМАТИЧНЕ КЕРУВАННЯ РЕЖИМАМИ ---
-        // Сервер має бути увімкнений, якщо є живлення від мережі АБО заряд батареї більше 20%
-        let shouldBeServer = power.onAC || power.percent > 20
-        
-        if shouldBeServer && !active {
-            _ = helperWrite("start")
-            active = true
-            sendHeartbeat(event: "mode_changed")
-        } else if !shouldBeServer && active {
-            _ = helperWrite("stop")
-            active = false
-            sendHeartbeat(event: "mode_changed")
+        // --- ЗАХИСТ ВІД РОЗРЯДУ (Єдина автоматична дія) ---
+        // Якщо живлення від батареї І заряд 20% або нижче -> примусово вимикаємо
+        if !power.onAC && power.percent >= 0 && power.percent <= 20 {
+            if active {
+                _ = helperWrite("stop")
+                active = false
+                sendHeartbeat(event: "mode_changed")
+            }
         }
-        // --------------------------------------
+        // У всіх інших випадках (на кабелі АБО заряд > 20%) програма
+        // НЕ втручається. Вона зберігає той режим, який ти вибрав кнопкою.
+        // ---------------------------------------------------
         
         if active && !power.onAC {
             if onBatterySince == nil { onBatterySince = Date() }
@@ -168,6 +166,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onBatterySince = nil
             batteryWarningSent = false
         }
+
+        let interval = Double(UserDefaults.standard.string(forKey: "heartbeatInterval") ?? "10") ?? 10.0
+        if Date().timeIntervalSince(lastHeartbeat) >= interval {
+            sendHeartbeat()
+            lastHeartbeat = Date()
+        }
+        updateMenu()
+    }
 
         let interval = Double(UserDefaults.standard.string(forKey: "heartbeatInterval") ?? "10") ?? 10.0
         if Date().timeIntervalSince(lastHeartbeat) >= interval {
