@@ -2,7 +2,8 @@
 set -u
 
 UTMCTL="/Applications/UTM.app/Contents/MacOS/utmctl"
-VM_UUID="98F4A813-2088-46B9-BD08-B26CC6D54239"
+# Динамічно зчитуємо поточний UUID з налаштувань програми
+VM_UUID=$(defaults read com.local.ha-server-menu utmVMUUID 2>/dev/null || echo "")
 HELPER="/Library/PrivilegedHelperTools/com.local.ha-server-control"
 BCLM="/Library/PrivilegedHelperTools/com.local.ha-server-bclm"
 
@@ -14,7 +15,9 @@ pmset -g batt
 pmset -g | grep -E 'SleepDisabled|hibernatemode|acwake|womp' || true
 
 section 'Статус UTM'
-if [ -x "$UTMCTL" ]; then
+if [ -z "$VM_UUID" ]; then
+  echo 'UUID машини ще не вказано в налаштуваннях.'
+elif [ -x "$UTMCTL" ]; then
   "$UTMCTL" status "$VM_UUID" 2>&1 || true
 else
   echo 'UTM не знайдено.'
