@@ -4,10 +4,11 @@ set -euo pipefail
 HELPER="/Library/PrivilegedHelperTools/com.local.ha-server-control"
 BCLM="/Library/PrivilegedHelperTools/com.local.ha-server-bclm"
 SUDOERS="/etc/sudoers.d/ha-server-control"
-SUPPORT_DIR="$HOME/Library/Application Support/HA Server"
-WEBHOOK_IDS="$SUPPORT_DIR/webhook-ids.conf"
-PACKAGE_DIR="$HOME/Documents/HA-Server-v3"
-PACKAGE_FILE="$PACKAGE_DIR/ha_server_macbook_package.yaml"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SUPPORT_DIR="$PROJECT_DIR"
+WEBHOOK_IDS="$PROJECT_DIR/webhook-ids.conf"
+PACKAGE_DIR="$PROJECT_DIR"
+PACKAGE_FILE="$PROJECT_DIR/ha_server_macbook_package.yaml"
 USER_NAME="$(id -un)"
 
 printf '\n=== HA Server: Встановлення системних служб ===\n'
