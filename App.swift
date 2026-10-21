@@ -52,7 +52,9 @@ func getAgentPath() -> String { return (NSHomeDirectory() as NSString).appending
 func isAutostartEnabled() -> Bool { return FileManager.default.fileExists(atPath: getAgentPath()) }
 func setAutostart(_ enable: Bool) {
     let agentPath = getAgentPath()
+    let currentlyEnabled = FileManager.default.fileExists(atPath: agentPath)
     let execPath = Bundle.main.executablePath ?? ""
+    
     if enable {
         let plistContent = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -67,10 +69,18 @@ func setAutostart(_ enable: Bool) {
         </plist>
         """
         try? plistContent.write(toFile: agentPath, atomically: true, encoding: .utf8)
-        _ = runCommand("/bin/launchctl", ["bootstrap", "gui/\(getuid())", agentPath])
+        
+        // Реєструємо в системі ТІЛЬКИ якщо раніше автозапуск був вимкнений
+        if !currentlyEnabled {
+            _ = runCommand("/bin/launchctl", ["bootstrap", "gui/\(getuid())", agentPath])
+            // Оскільки система миттєво запустить свою фонову копію, цю ми закриваємо, щоб не було дублів
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     } else {
-        _ = runCommand("/bin/launchctl", ["bootout", "gui/\(getuid())/com.local.ha-server-menu"])
-        try? FileManager.default.removeItem(atPath: agentPath)
+        if currentlyEnabled {
+            _ = runCommand("/bin/launchctl", ["bootout", "gui/\(getuid())/com.local.ha-server-menu"])
+            try? FileManager.default.removeItem(atPath: agentPath)
+        }
     }
 }
 
