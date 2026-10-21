@@ -71,11 +71,13 @@ case "${1:-}" in
     date > "$PROTECT_FILE"; chmod 644 "$PROTECT_FILE"
     [ -x "$BCLM" ] && "$BCLM" write 77 >/dev/null 2>&1 || true
     echo 'OK' ;;
+  protection-status)
+    if [ -f "$PROTECT_FILE" ]; then echo 'YES'; else echo 'NO'; fi ;;
   protection-off)
     rm -f "$PROTECT_FILE"
     [ -x "$BCLM" ] && "$BCLM" write 100 >/dev/null 2>&1 || true
     echo 'OK' ;;
-  *) echo 'Usage: start|stop|status|protection-on|protection-off'; exit 1 ;;
+  *) echo 'Usage: start|stop|status|protection-on|protection-off|protection-status'; exit 1 ;;
 esac
 HELPER_SCRIPT
 sudo install -o root -g wheel -m 755 /tmp/ha-server-control "$HELPER"
