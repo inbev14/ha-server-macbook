@@ -141,7 +141,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func pollState() {
         let power = batteryInfo()
-        let active = serverStatus() == "ON" || serverStatus() == "PAUSED"
+        var active = serverStatus() == "ON" || serverStatus() == "PAUSED"
+        
+        // --- АВТОМАТИЧНЕ КЕРУВАННЯ РЕЖИМАМИ ---
+        // Сервер має бути увімкнений, якщо є живлення від мережі АБО заряд батареї більше 20%
+        let shouldBeServer = power.onAC || power.percent > 20
+        
+        if shouldBeServer && !active {
+            _ = helperWrite("start")
+            active = true
+            sendHeartbeat(event: "mode_changed")
+        } else if !shouldBeServer && active {
+            _ = helperWrite("stop")
+            active = false
+            sendHeartbeat(event: "mode_changed")
+        }
+        // --------------------------------------
         
         if active && !power.onAC {
             if onBatterySince == nil { onBatterySince = Date() }
