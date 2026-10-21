@@ -18,10 +18,13 @@
    git clone [https://github.com/inbev14/ha-server-macbook.git](https://github.com/inbev14/ha-server-macbook.git)
    cd ha-server-macbook
 2. Налаштуйте конфігурацію: 
+   ```bash
    cp config.example.conf config.conf
 3. Запустіть системне встановлення:
+   ```bash
    ./Installer.sh
 4. Скомпілюйте програму:
+   ```bash
    ./Build.command
 
 ## Встановлення 
