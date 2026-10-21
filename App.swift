@@ -86,7 +86,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var localWebhookID = ""
     var remoteWebhookID = ""
 
-    // Динамічні налаштування (завантажуються з бази Mac)
     var haURL: String { UserDefaults.standard.string(forKey: "localHAURL") ?? "http://192.168.0.215:8123" }
     var remoteHAURL: String { UserDefaults.standard.string(forKey: "remoteHAURL") ?? "https://ha.smart-home-server.pp.ua" }
     var vmIdentifier: String { UserDefaults.standard.string(forKey: "utmVMUUID") ?? "" }
@@ -108,7 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     func loadWebhookIDs() {
-        let path = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/HA Server/webhook-ids.conf")
+        let path = "/Users/veronika/Documents/HA-Server-Project/webhook-ids.conf"
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
         for line in content.components(separatedBy: .newlines) {
             if line.hasPrefix("LOCAL_ID=") { localWebhookID = String(line.dropFirst(9)) }
@@ -118,7 +117,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func ensureHomeAssistantVM() {
         let id = vmIdentifier
-        if id.isEmpty { return } // Не запускаємо, якщо UUID не вказано
+        if id.isEmpty { return } 
         
         DispatchQueue.global(qos: .utility).async {
             var status = runCommand(utmctl, ["status", id])
@@ -166,14 +165,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onBatterySince = nil
             batteryWarningSent = false
         }
-
-        let interval = Double(UserDefaults.standard.string(forKey: "heartbeatInterval") ?? "10") ?? 10.0
-        if Date().timeIntervalSince(lastHeartbeat) >= interval {
-            sendHeartbeat()
-            lastHeartbeat = Date()
-        }
-        updateMenu()
-    }
 
         let interval = Double(UserDefaults.standard.string(forKey: "heartbeatInterval") ?? "10") ?? 10.0
         if Date().timeIntervalSince(lastHeartbeat) >= interval {
