@@ -1,5 +1,6 @@
 import Cocoa
 import CoreGraphics
+import Foundation
 
 let helper = "/Library/PrivilegedHelperTools/com.local.ha-server-control"
 let utmctl = "/Applications/UTM.app/Contents/MacOS/utmctl"
@@ -50,6 +51,7 @@ func externalDisplayConnected() -> Bool {
 
 func getAgentPath() -> String { return (NSHomeDirectory() as NSString).appendingPathComponent("Library/LaunchAgents/com.local.ha-server-menu.plist") }
 func isAutostartEnabled() -> Bool { return FileManager.default.fileExists(atPath: getAgentPath()) }
+
 func setAutostart(_ enable: Bool) {
     let agentPath = getAgentPath()
     let currentlyEnabled = FileManager.default.fileExists(atPath: agentPath)
@@ -70,10 +72,8 @@ func setAutostart(_ enable: Bool) {
         """
         try? plistContent.write(toFile: agentPath, atomically: true, encoding: .utf8)
         
-        // Реєструємо в системі ТІЛЬКИ якщо раніше автозапуск був вимкнений
         if !currentlyEnabled {
             _ = runCommand("/bin/launchctl", ["bootstrap", "gui/\(getuid())", agentPath])
-            // Оскільки система миттєво запустить свою фонову копію, цю ми закриваємо, щоб не було дублів
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     } else {
@@ -93,8 +93,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var onBatterySince: Date?
     var batteryWarningSent = false
     
-    // Пам'ять про те, чи був кабель увімкнений під час попередньої перевірки
     var lastACState: Bool?
+    var activityAssertion: NSObjectProtocol? // Блокувальник сну системи
     
     var localWebhookID = ""
     var remoteWebhookID = ""
@@ -107,6 +107,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        
+        // --- АНТИ-СИСТЕМНИЙ СОН (АВТОМАТИЗАЦІЯ) ---
+        // 1. Забороняємо присипляти НАШУ програму
+        UserDefaults.standard.set(true, forKey: "NSAppSleepDisabled")
+        activityAssertion = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical], reason: "HA Server Watchdog")
+        
+        // 2. Програмно вимикаємо App Nap для самої UTM 
+        _ = runCommand("/usr/bin/defaults", ["write", "com.utmapp.UTM", "NSAppSleepDisabled", "-bool", "YES"])
+        // ------------------------------------------
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu = NSMenu()
         menu.delegate = self
@@ -144,6 +154,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = runCommand(utmctl, ["start", id])
         }
     }
+    
+    // --- WATCHDOG ДЛЯ ВІРТУАЛКИ ---
+    func checkVMHealth() {
+        let id = vmIdentifier
+        if id.isEmpty { return } 
+        DispatchQueue.global(qos: .utility).async {
+            let status = runCommand(utmctl, ["status", id])
+            let lower = status.output.lowercased()
+            // Якщо UTM призупинився чи заснув - примусово будимо
+            if status.status == 0 && (lower.contains("suspended") || lower.contains("paused") || lower.contains("stopped")) {
+                _ = runCommand(utmctl, ["start", id])
+            }
+        }
+    }
 
     func applyPreferences() {
         timer?.invalidate()
@@ -155,8 +179,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let power = batteryInfo()
         var active = serverStatus() == "ON" || serverStatus() == "PAUSED"
         
-        // --- АВТОМАТИЧНЕ УВІМКНЕННЯ ПРИ ПОДАЧІ ЖИВЛЕННЯ ---
-        // Якщо раніше кабелю не було, а тепер він є (момент підключення)
         if let wasAC = lastACState, !wasAC && power.onAC {
             if !active {
                 _ = helperWrite("start")
@@ -164,11 +186,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 sendHeartbeat(event: "mode_changed")
             }
         }
-        // Запам'ятовуємо поточний стан кабелю для наступної перевірки
         lastACState = power.onAC
         
-        // --- АВТОМАТИЧНЕ ВИМКНЕННЯ ВІД РОЗРЯДУ ---
-        // Якщо живлення від батареї І заряд 20% або нижче -> примусово вимикаємо
         if !power.onAC && power.percent >= 0 && power.percent <= 20 {
             if active {
                 _ = helperWrite("stop")
@@ -176,6 +195,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 sendHeartbeat(event: "mode_changed")
             }
         }
+        
+        // --- АВТОМАТИЧНА ПЕРЕВІРКА ---
+        if active {
+            checkVMHealth() // Перевіряємо та підтримуємо UTM живим
+        }
+        // -----------------------------
         
         if active && !power.onAC {
             if onBatterySince == nil { onBatterySince = Date() }
