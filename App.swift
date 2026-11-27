@@ -93,6 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastHeartbeat = Date.distantPast
     var onBatterySince: Date?
     var batteryWarningSent = false
+    var isEmergencySleeping = false
     
     var lastACState: Bool?
     var activityAssertion: NSObjectProtocol? 
@@ -110,6 +111,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var enableSmartPower: Bool { UserDefaults.standard.bool(forKey: "enableSmartPower") }
     var enableWatchdog: Bool { UserDefaults.standard.bool(forKey: "enableWatchdog") }
     var enableAutoStartVM: Bool { UserDefaults.standard.bool(forKey: "enableAutoStartVM") }
+    var lowBatteryThreshold: Int { let v = UserDefaults.standard.integer(forKey: "lowBatteryThreshold"); return (v >= 5 && v <= 75) ? v : 30 }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -219,7 +221,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     sendHeartbeat(event: "mode_changed")
                 }
             }
-            if !power.onAC && power.percent >= 0 && power.percent <= 20 {
+            if !power.onAC && power.percent >= 0 && power.percent <= lowBatteryThreshold {
+            if !isEmergencySleeping {
+                isEmergencySleeping = true
+                updateWatchdogState(active: false)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = helperWrite("off")
+                    let id = self.vmIdentifier
+                    if !id.isEmpty {
+                        _ = runCommand(utmctl, ["stop", id])
+                        for _ in 1...10 {
+                            Thread.sleep(forTimeInterval: 1)
+                            if runCommand(utmctl, ["status", id]).output.lowercased().contains("stopped") { break }
+                        }
+                        if !runCommand(utmctl, ["status", id]).output.lowercased().contains("stopped") {
+                            _ = runCommand(utmctl, ["stop", "--force", id])
+                            Thread.sleep(forTimeInterval: 2)
+                        }
+                    }
+                    _ = runCommand("/usr/bin/pmset", ["sleepnow"])
+                }
+            }
                 if active {
                     _ = helperWrite("stop")
                     active = false
@@ -245,6 +267,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             onBatterySince = nil
             batteryWarningSent = false
+            isEmergencySleeping = false
         }
 
         let interval = Double(UserDefaults.standard.string(forKey: "heartbeatInterval") ?? "10") ?? 10.0
@@ -323,7 +346,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let toggle = NSMenuItem(title: active ? "Вимкнути серверний режим" : "Увімкнути серверний режим", action: #selector(toggleServer), keyEquivalent: "")
         toggle.target = self; menu.addItem(toggle)
         
-        let batteryToggle = NSMenuItem(title: "Захист батареї (≈80% / сон при 20%)", action: #selector(toggleBatteryProtection(_:)), keyEquivalent: "")
+        let batteryToggle = NSMenuItem(title: "Захист батареї (≈80% / сон при \(lowBatteryThreshold)%)", action: #selector(toggleBatteryProtection(_:)), keyEquivalent: "")
         batteryToggle.target = self; batteryToggle.state = protected ? .on : .off; menu.addItem(batteryToggle)
         
         menu.addItem(NSMenuItem.separator())
@@ -371,7 +394,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Що роблять автоматизації:
         
         1. Розумне живлення (Smart Power):
-        Автоматично запускає сервер при появі напруги (AC) і безпечно вимикає його, якщо заряд падає до 20% під час відключень. Це захищає систему від раптової втрати живлення та рятує акумулятор.
+        Автоматично запускає сервер при появі напруги (AC) і безпечно вимикає його, якщо заряд падає до \(lowBatteryThreshold)% під час відключень. Це захищає систему від раптової втрати живлення та рятує акумулятор.
         
         2. Захист від сну (Watchdog):
         Коли екран Mac вимкнений, macOS намагається перевести всі програми в економний режим (App Nap) і відключає Wi-Fi. Watchdog блокує ці процеси і кожні 10 секунд пінгує віртуальну машину (UTM), щоб сервер завжди залишався в мережі.
@@ -382,83 +405,93 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.runModal()
     }
 
+    @objc func showHelpPopup(_ sender: NSButton) {
+        let info: [String: (String, String)] = [
+            "smartPower": ("Розумне керування живленням", "Увімкнено: при появі 220В вмикає режим сервера; при падінні заряду до нижньої межі вимикає сервер, м'яко зупиняє VM і переводить Mac у сон.\nВимкнено: усе керується вручну, Mac не засинає автоматично."),
+            "lowBatt": ("Нижня межа батареї для сну", "Поріг заряду при роботі від АКБ, на якому зупиняється VM і Mac іде в сон. Для зношеної батареї ставте 30–35%. Працює лише з увімкненим «Розумним керуванням живленням»."),
+            "watchdog": ("Захист від сну / Watchdog", "Увімкнено: блокує App Nap при вимкненому екрані та кожні 10с перевіряє UTM.\nВимкнено: macOS може приспати фонові процеси та Wi-Fi."),
+            "autostart": ("Автозапуск при увімкненні Mac", "Увімкнено: HA Server стартує автоматично при вході в macOS.\nВимкнено: програму потрібно запускати вручну."),
+            "autoStartVM": ("Автозапуск віртуальної машини UTM", "Увімкнено: автоматично відкриває UTM і запускає Home Assistant.\nВимкнено: VM запускається вручну."),
+            "showBatt": ("Показувати відсотки заряду на іконці", "Увімкнено: показує % заряду біля іконки в меню-барі.\nВимкнено: лише іконка статусу.")
+        ]
+        let (t, m) = info[sender.identifier?.rawValue ?? ""] ?? ("Довідка", "")
+        let a = NSAlert(); a.messageText = t; a.informativeText = m; a.addButton(withTitle: "Зрозуміло"); a.runModal()
+    }
+
     @objc func showPreferences() {
-        let alert = NSAlert()
-        alert.messageText = "Налаштування HA Server"
-        
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 420, height: 520))
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        
-        func createLabel(_ text: String, bold: Bool = false, small: Bool = false) -> NSTextField {
-            let lbl = NSTextField(labelWithString: text)
-            if bold { lbl.font = NSFont.boldSystemFont(ofSize: 13) }
-            if small {
-                lbl.font = NSFont.systemFont(ofSize: 11); lbl.textColor = NSColor.secondaryLabelColor
-                lbl.cell?.wraps = true; lbl.maximumNumberOfLines = 4; lbl.preferredMaxLayoutWidth = 410
-            }
-            lbl.isEditable = false; lbl.isBordered = false; lbl.drawsBackground = false
-            return lbl
+        let alert = NSAlert(); alert.messageText = "Налаштування HA Server"
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 430, height: 600))
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
+
+        func lbl(_ t: String, bold: Bool = false, small: Bool = false) -> NSTextField {
+            let l = NSTextField(labelWithString: t)
+            if bold { l.font = .boldSystemFont(ofSize: 13) }
+            if small { l.font = .systemFont(ofSize: 11); l.textColor = .secondaryLabelColor }
+            return l
         }
-        func createInput(_ text: String) -> NSTextField {
-            let tf = NSTextField(string: text); tf.translatesAutoresizingMaskIntoConstraints = false; tf.widthAnchor.constraint(equalToConstant: 410).isActive = true
-            return tf
+        func inp(_ t: String) -> NSTextField {
+            let tf = NSTextField(string: t); tf.translatesAutoresizingMaskIntoConstraints = false
+            tf.widthAnchor.constraint(equalToConstant: 420).isActive = true; return tf
         }
-        func createCheckbox(_ text: String, checked: Bool) -> NSButton {
-            let btn = NSButton(checkboxWithTitle: text, target: nil, action: nil); btn.state = checked ? .on : .off
-            return btn
+        func chk(_ t: String, _ on: Bool) -> NSButton {
+            let b = NSButton(checkboxWithTitle: t, target: nil, action: nil); b.state = on ? .on : .off; return b
         }
-        
+        func rowHelp(_ v: NSView, _ key: String, _ tip: String) {
+            let b = NSButton(); b.bezelStyle = .helpButton; b.title = ""
+            b.identifier = NSUserInterfaceItemIdentifier(key); b.toolTip = tip
+            b.target = self; b.action = #selector(showHelpPopup(_:))
+            let sp = NSView(); sp.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let r = NSStackView(views: [v, sp, b]); r.orientation = .horizontal; r.alignment = .centerY
+            r.translatesAutoresizingMaskIntoConstraints = false; r.widthAnchor.constraint(equalToConstant: 420).isActive = true
+            stack.addArrangedSubview(r)
+        }
+        func sep() {
+            let b = NSBox(); b.boxType = .separator; b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 420).isActive = true; stack.addArrangedSubview(b)
+        }
+
         let ud = UserDefaults.standard
-        stack.addArrangedSubview(createLabel("З'єднання", bold: true))
-        stack.addArrangedSubview(createLabel("Локальна адреса HA:", small: true))
-        let localInput = createInput(ud.string(forKey: "localHAURL") ?? "")
-        stack.addArrangedSubview(localInput)
-        
-        stack.addArrangedSubview(createLabel("Хмарна адреса HA:", small: true))
-        let remoteInput = createInput(ud.string(forKey: "remoteHAURL") ?? "")
-        stack.addArrangedSubview(remoteInput)
-        
-        stack.addArrangedSubview(createLabel("UTM VM UUID:", small: true))
-        let vmInput = createInput(ud.string(forKey: "utmVMUUID") ?? "")
-        stack.addArrangedSubview(vmInput)
-        
-        stack.addArrangedSubview(createLabel("Інтервал оновлення (сек):", small: true))
-        let intervalInput = createInput(ud.string(forKey: "heartbeatInterval") ?? "10")
-        stack.addArrangedSubview(intervalInput)
-        
-        let box1 = NSBox(); box1.boxType = .separator; box1.translatesAutoresizingMaskIntoConstraints = false; box1.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        stack.addArrangedSubview(box1)
-        
-        stack.addArrangedSubview(createLabel("Автоматизації (Опис в меню 'Про програму')", bold: true))
-        
-        let smartPowerCheck = createCheckbox("Розумне керування живленням (Авто вкл/викл)", checked: enableSmartPower)
-        stack.addArrangedSubview(smartPowerCheck)
-        
-        let watchdogCheck = createCheckbox("Захист від сну / Watchdog (Блокує App Nap)", checked: enableWatchdog)
-        stack.addArrangedSubview(watchdogCheck)
-        
-        let autostartCheck = createCheckbox("Автозапуск при увімкненні Mac", checked: isAutostartEnabled())
-        stack.addArrangedSubview(autostartCheck)
-        
-        let autoStartVMCheck = createCheckbox("Автозапуск віртуальної машини UTM", checked: enableAutoStartVM)
-        stack.addArrangedSubview(autoStartVMCheck)
-        
-        let showBattCheck = createCheckbox("Показувати відсотки заряду на іконці", checked: ud.bool(forKey: "showBatteryInIcon"))
-        stack.addArrangedSubview(showBattCheck)
-        
-        let box2 = NSBox(); box2.boxType = .separator; box2.translatesAutoresizingMaskIntoConstraints = false; box2.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        stack.addArrangedSubview(box2)
-        
-        stack.addArrangedSubview(createLabel("⚠️ Push-сповіщення (Потребує запуску Installer.sh)", bold: true))
-        let notifyInput = createInput(ud.string(forKey: "notifyService") ?? "")
-        stack.addArrangedSubview(notifyInput)
-        
+        stack.addArrangedSubview(lbl("З'єднання", bold: true))
+        stack.addArrangedSubview(lbl("Локальна адреса HA:", small: true))
+        let localInput = inp(ud.string(forKey: "localHAURL") ?? ""); stack.addArrangedSubview(localInput)
+        stack.addArrangedSubview(lbl("Хмарна адреса HA:", small: true))
+        let remoteInput = inp(ud.string(forKey: "remoteHAURL") ?? ""); stack.addArrangedSubview(remoteInput)
+        stack.addArrangedSubview(lbl("UTM VM UUID:", small: true))
+        let vmInput = inp(ud.string(forKey: "utmVMUUID") ?? ""); stack.addArrangedSubview(vmInput)
+        stack.addArrangedSubview(lbl("Інтервал оновлення (сек):", small: true))
+        let intervalInput = inp(ud.string(forKey: "heartbeatInterval") ?? "10"); stack.addArrangedSubview(intervalInput)
+        sep()
+
+        stack.addArrangedSubview(lbl("Автоматизації (натисніть ? для пояснення)", bold: true))
+        let smartPowerCheck = chk("Розумне керування живленням (Авто вкл/викл)", enableSmartPower)
+        rowHelp(smartPowerCheck, "smartPower", "Авто-режим сервера від 220В і сон при розряді")
+
+        let lowBattPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for pct in [10, 15, 20, 25, 30, 35, 40, 45, 50, 60] {
+            let it = NSMenuItem(title: "\(pct)%", action: nil, keyEquivalent: ""); it.tag = pct
+            lowBattPopup.menu?.addItem(it)
+            if pct == lowBatteryThreshold { lowBattPopup.select(it) }
+        }
+        if lowBattPopup.selectedItem == nil { lowBattPopup.selectItem(withTag: 30) }
+        let lowRow = NSStackView(views: [lbl("Нижня межа батареї для сну:"), lowBattPopup])
+        lowRow.orientation = .horizontal; lowRow.alignment = .centerY; lowRow.spacing = 8
+        rowHelp(lowRow, "lowBatt", "Заряд, при якому зупиняється VM і Mac іде в сон")
+
+        let watchdogCheck = chk("Захист від сну / Watchdog (Блокує App Nap)", enableWatchdog)
+        rowHelp(watchdogCheck, "watchdog", "Не дає macOS приспати HA Server та UTM")
+        let autostartCheck = chk("Автозапуск при увімкненні Mac", isAutostartEnabled())
+        rowHelp(autostartCheck, "autostart", "Запускає HA Server при вході в macOS")
+        let autoStartVMCheck = chk("Автозапуск віртуальної машини UTM", enableAutoStartVM)
+        rowHelp(autoStartVMCheck, "autoStartVM", "Автоматично стартує Home Assistant у UTM")
+        let showBattCheck = chk("Показувати відсотки заряду на іконці", ud.bool(forKey: "showBatteryInIcon"))
+        rowHelp(showBattCheck, "showBatt", "Відображає % АКБ біля іконки в меню-барі")
+        sep()
+
+        stack.addArrangedSubview(lbl("⚠️ Push-сповіщення (Потребує запуску Installer.sh)", bold: true))
+        let notifyInput = inp(ud.string(forKey: "notifyService") ?? ""); stack.addArrangedSubview(notifyInput)
+
         alert.accessoryView = stack
-        alert.addButton(withTitle: "Зберегти")
-        alert.addButton(withTitle: "Скасувати")
-        
+        alert.addButton(withTitle: "Зберегти"); alert.addButton(withTitle: "Скасувати")
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             ud.set(localInput.stringValue, forKey: "localHAURL")
@@ -467,14 +500,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ud.set(intervalInput.stringValue, forKey: "heartbeatInterval")
             ud.set(notifyInput.stringValue, forKey: "notifyService")
             ud.set(showBattCheck.state == .on, forKey: "showBatteryInIcon")
-            
+            if let v = lowBattPopup.selectedItem?.tag, v >= 5, v <= 75 { ud.set(v, forKey: "lowBatteryThreshold") }
             ud.set(smartPowerCheck.state == .on, forKey: "enableSmartPower")
             ud.set(watchdogCheck.state == .on, forKey: "enableWatchdog")
             ud.set(autoStartVMCheck.state == .on, forKey: "enableAutoStartVM")
-            
             setAutostart(autostartCheck.state == .on)
-            self.applyPreferences()
-            self.updateMenu()
+            self.applyPreferences(); self.updateMenu()
         }
     }
 
